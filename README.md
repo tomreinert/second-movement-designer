@@ -6,13 +6,7 @@ Supports both chassis skins (F-91W / A158WEA-9) and both LCD types (Classic / Cu
 
 ## Run
 
-```sh
-python3 -m http.server 8765
-```
-
-Then open <http://localhost:8765/index.html>.
-
-Or just double-click `index.html` to open in a browser.
+Open `index.html` in a browser. No build, no server, no dependencies.
 
 ## Controls
 
