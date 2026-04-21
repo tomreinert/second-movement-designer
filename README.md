@@ -1,5 +1,7 @@
 # Second Movement Designer
 
+> All credit goes to **Joey Castillo** and the [Sensor Watch](https://www.sensorwatch.net/) project, and to the contributors of [second-movement](https://github.com/joeycastillo/second-movement). This here is a small tool that reuses their work to sketch watch faces visually.
+
 A small browser tool for designing Sensor Watch faces segment-by-segment. Toggle individual LCD segments, type characters into digit positions, and export as `watch_set_pixel(com, seg)` C calls ready to paste into a Movement face.
 
 Supports both chassis skins (F-91W / A158WEA-9) and both LCD types (Classic / Custom Pro), switched independently.
