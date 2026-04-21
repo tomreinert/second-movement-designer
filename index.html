@@ -1775,23 +1775,15 @@
   indexLcd('custom');
   indexLcd('classic');
 
-  // Walk each leaf <g> (a group that directly contains paths) and add invisible
-  // <rect> hit areas that expand the clickable region to the shape's natural visual.
-  //
-  // Icon groups (signal, bell, arrows, sleep, lap, COL, 24H/PM, etc.) have very few
-  // unique (com,seg) addresses in them and read as one coherent symbol — one hit rect
-  // covers the whole group's bbox. Digit columns have 7+ unique addresses (one per
-  // 7-seg stroke); there we only add hit rects for the few compound segments (e.g.
-  // the two halves of the big seconds "H" stroke).
-  //
-  // Because each rect is appended as a sibling of the paths inside the same <g>,
-  // it inherits the local coord system — getBBox() values map directly, no CTM math.
+  // Leaf <g>s with ≤ICON_GROUP_MAX_KEYS unique (com,seg) are treated as icons
+  // (one bbox hit rect for the whole group). Digit columns get per-(com,seg)
+  // compound rects only where a segment is drawn as multiple paths. Hit rects
+  // are siblings of paths inside the same <g>, so getBBox maps directly.
+  const ICON_GROUP_MAX_KEYS = 3;
+
   function buildHitRects() {
     const SVG_NS = 'http://www.w3.org/2000/svg';
-    const ICON_GROUP_MAX_KEYS = 3; // heuristic: <=3 unique (com,seg) → treat as icon
-    // Padding (SVG units) around each hit rect so selection feels Figma-generous
-    // rather than pixel-precise. viewBox is ~1271 wide, so 4 units ≈ 0.3% of width.
-    const PAD = 4;
+    const PAD = 4; // SVG units; Figma-style forgiving hit margin around each segment
     document.body.classList.add('indexing');
     try {
       for (const lcd of ['custom', 'classic']) {
@@ -1818,15 +1810,11 @@
           const uniqKeys = new Set(paths.map(p => `${p.dataset.com},${p.dataset.seg}`));
 
           if (uniqKeys.size <= ICON_GROUP_MAX_KEYS) {
-            // Icon group: one hit rect covering the whole group bbox.
             let bb; try { bb = group.getBBox(); } catch { continue; }
             if (bb.width === 0 && bb.height === 0) continue;
             addHitRect(group, bb.x, bb.y, bb.width, bb.height,
                        paths[0].dataset.com, paths[0].dataset.seg);
           } else {
-            // Digit/character group: one hit rect per (com,seg), covering the union
-            // of all paths at that address. Gives each 7-seg stroke a padded Figma-
-            // style hit area without losing per-segment granularity.
             const byKey = new Map();
             for (const p of paths) {
               const k = `${p.dataset.com},${p.dataset.seg}`;
@@ -1942,9 +1930,8 @@
   }
 
   stage.addEventListener('click', (e) => {
-    // Cmd/Ctrl+click: select a digit position or an icon.
-    // Positions take priority (their bbox covers negative space inside digits);
-    // fall back to the segment/icon under the cursor otherwise.
+    // Cmd/Ctrl+click: select a digit position (preferred, covers negative space)
+    // or fall back to whatever icon the cursor is actually over.
     if (e.metaKey || e.ctrlKey) {
       const pos = findPositionAtPoint(e.clientX, e.clientY);
       if (pos != null) { setEditPos(pos); e.preventDefault(); return; }
@@ -1955,17 +1942,13 @@
     }
     const t = e.target.closest('[data-com][data-seg]');
     if (!t || !inCurrentLcd(t)) {
-      // Click outside any segment while editing → exit edit mode
       if (editing) setEditing(null);
       return;
     }
-    // Plain click: exit edit mode (if active) and toggle the segment
     if (editing) setEditing(null);
     toggleAddr(+t.dataset.com, +t.dataset.seg);
   });
 
-  // Hover highlights every path sharing the (com, seg) of the hovered one,
-  // so the "clickable unit" matches what will actually toggle.
   let peekKey = null;
   function setPeek(key) {
     if (peekKey === key) return;
@@ -1989,20 +1972,13 @@
   stage.addEventListener('mouseleave', () => { setPeek(null); hideAreaPreview(); lastMouseClient = null; });
 
   // ─── Area-select preview (Cmd/Ctrl held + hover) ──────────────────────
-  // Shows a dimmer version of the edit cursor around the position or icon the
-  // user would select if they clicked right now. Lets you aim before committing.
   const previewEl = document.getElementById('edit-preview');
   let cmdHeld = false;
   let lastMouseClient = null;
 
   function showAreaPreview(bb) {
     if (!bb) { hideAreaPreview(); return; }
-    const stageRect = stage.getBoundingClientRect();
-    const PAD = 6;
-    previewEl.style.left   = `${bb.left - stageRect.left - PAD}px`;
-    previewEl.style.top    = `${bb.top  - stageRect.top  - PAD}px`;
-    previewEl.style.width  = `${bb.width  + PAD * 2}px`;
-    previewEl.style.height = `${bb.height + PAD * 2}px`;
+    positionOverlay(previewEl, bb);
     previewEl.classList.add('visible');
   }
   function hideAreaPreview() { previewEl.classList.remove('visible'); }
@@ -2115,8 +2091,7 @@
   const getCharset   = () => currentLcd === 'custom' ? CUSTOM_CHARSET   : CLASSIC_CHARSET;
   const getPositions = () => currentLcd === 'custom' ? CUSTOM_POSITIONS : CLASSIC_POSITIONS;
 
-  // Reverse map: "com,seg" -> Set of positions that include this address.
-  // Built once per LCD for finding "which position does this segment belong to?".
+  // "com,seg" -> first position index that includes that address (or absent if none).
   const addrToPositions = { custom: new Map(), classic: new Map() };
   for (const lcd of ['custom', 'classic']) {
     const positions = lcd === 'custom' ? CUSTOM_POSITIONS : CLASSIC_POSITIONS;
@@ -2136,8 +2111,8 @@
   }
 
   // Unified navigation order: digit positions + icon groups, sorted by screen
-  // bbox center (top-to-bottom, left-to-right). Arrow keys walk through this list,
-  // so you can step from a digit into the signal/bell/arrows, etc.
+  // bbox center (top-to-bottom, left-to-right). Consumed by Tab/Shift+Tab
+  // navigation; arrow keys use 2D spatial navigation against the same list.
   const navOrder = { custom: [], classic: [] };
   function computeNavOrder() {
     document.body.classList.add('indexing');
@@ -2145,7 +2120,6 @@
       for (const lcd of ['custom', 'classic']) {
         const positions = lcd === 'custom' ? CUSTOM_POSITIONS : CLASSIC_POSITIONS;
         const entries = [];
-        // Digit positions
         for (let p = 0; p < positions.length; p++) {
           if (!positions[p]) continue;
           const bb = getPositionScreenBBox(lcd, p);
@@ -2156,10 +2130,8 @@
             cy: bb.top + bb.height / 2,
           });
         }
-        // Icon groups (leaf <g>s with ≤3 unique (com,seg) that aren't part of any position)
-        const lcdEl = document.getElementById(lcd);
         const leafGroups = new Set();
-        lcdEl.querySelectorAll('[data-com][data-seg]').forEach(el => {
+        document.getElementById(lcd).querySelectorAll('[data-com][data-seg]').forEach(el => {
           leafGroups.add(el.parentElement);
         });
         const seenCenters = [];
@@ -2167,21 +2139,19 @@
           const paths = [...g.querySelectorAll(':scope > [data-com][data-seg]:not([data-hit])')];
           if (paths.length === 0) continue;
           const uniqKeys = new Set(paths.map(p => `${p.dataset.com},${p.dataset.seg}`));
-          if (uniqKeys.size > 3) continue; // digit column, already covered by positions
+          if (uniqKeys.size > ICON_GROUP_MAX_KEYS) continue;
           const canonCom = +paths[0].dataset.com, canonSeg = +paths[0].dataset.seg;
           if (addrToPositions[lcd].has(`${canonCom},${canonSeg}`)) continue;
           const gr = g.getBoundingClientRect();
           if (gr.width === 0 && gr.height === 0) continue;
           const cx = gr.left + gr.width / 2, cy = gr.top + gr.height / 2;
-          // Dedupe icons that render at the same spot (e.g. sleep has two paths at
-          // different addresses but identical geometry — keep the first).
+          // Dedupe e.g. the sleep moon (drawn twice at two addresses for firmware
+          // reasons); otherwise cmd-click would flicker between the two.
           if (seenCenters.some(c => Math.abs(c.cx - cx) < 2 && Math.abs(c.cy - cy) < 2)) continue;
           seenCenters.push({ cx, cy });
           entries.push({ kind: 'icon', com: canonCom, seg: canonSeg, cx, cy });
         }
-        // Reading order: sort by cy into rows (gap > ROW_GAP starts a new row),
-        // then left-to-right within each row. ROW_GAP=15 separates tightly-stacked
-        // LCD rows like bell/signal (cy ~359) from 24H/PM (cy ~398).
+        // Tight LCD rows (bell/signal vs 24H/PM) sit ~20px apart; 15 separates them.
         const ROW_GAP = 15;
         entries.sort((a, b) => a.cy - b.cy);
         const rows = [];
@@ -2198,56 +2168,6 @@
     }
   }
 
-  // Get the combined bbox (in SVG user coords) of all real paths for a position.
-  // Uses getBoundingClientRect + svg screenCTM inverse to work uniformly whether
-  // or not the paths have their own transforms.
-  function getPositionBBoxSvg(lcd, pos) {
-    const positions = lcd === 'custom' ? CUSTOM_POSITIONS : CLASSIC_POSITIONS;
-    const mapping = positions[pos];
-    if (!mapping) return null;
-    const svg = document.querySelector('#stage svg');
-    const ctm = svg.getScreenCTM();
-    if (!ctm) return null;
-    const inv = ctm.inverse();
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, ok = false;
-    const seen = new Set();
-    for (const slot of mapping) {
-      if (!slot) continue;
-      const key = `${slot[0]},${slot[1]}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const els = perLcdIndex[lcd].get(key) || [];
-      for (const el of els) {
-        if (el.hasAttribute('data-hit')) continue;
-        const r = el.getBoundingClientRect();
-        if (r.width === 0 && r.height === 0) continue;
-        // Corners in screen space → inverse to SVG user coords
-        const pts = [
-          svgPoint(svg, r.left,  r.top).matrixTransform(inv),
-          svgPoint(svg, r.right, r.top).matrixTransform(inv),
-          svgPoint(svg, r.left,  r.bottom).matrixTransform(inv),
-          svgPoint(svg, r.right, r.bottom).matrixTransform(inv),
-        ];
-        for (const p of pts) {
-          if (p.x < minX) minX = p.x;
-          if (p.y < minY) minY = p.y;
-          if (p.x > maxX) maxX = p.x;
-          if (p.y > maxY) maxY = p.y;
-        }
-        ok = true;
-      }
-    }
-    if (!ok) return null;
-    return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
-  }
-  function svgPoint(svg, x, y) {
-    const p = svg.createSVGPoint();
-    p.x = x; p.y = y;
-    return p;
-  }
-
-  // Paint a character into the current edit position (matches firmware's
-  // watch_display_character semantics).
   function paintCharacter(ch) {
     const pos = getEditPos();
     if (pos == null) return;
@@ -2257,15 +2177,10 @@
     const mapping = getPositions()[pos];
     if (!mapping) return;
     const lit = perLcdLit[currentLcd];
-    // Clear all 8 slots of this position first
     for (let i = 0; i < 8; i++) {
-      if (mapping[i]) lit.delete(`${mapping[i][0]},${mapping[i][1]}`);
-    }
-    // Light each slot whose bit is set in the bitmask
-    for (let i = 0; i < 8; i++) {
-      if ((bitmask >> i) & 1 && mapping[i]) {
-        lit.add(`${mapping[i][0]},${mapping[i][1]}`);
-      }
+      if (!mapping[i]) continue;
+      const key = `${mapping[i][0]},${mapping[i][1]}`;
+      if ((bitmask >> i) & 1) lit.add(key); else lit.delete(key);
     }
     applyLit(currentLcd);
     refreshUI();
@@ -2295,11 +2210,7 @@
   const editPillEl   = document.getElementById('edit-pill');
 
   function setEditing(target) {
-    // Normalize: invalid position → null
-    if (target?.type === 'pos') {
-      const positions = getPositions();
-      if (!positions[target.pos]) target = null;
-    }
+    if (target?.type === 'pos' && !getPositions()[target.pos]) target = null;
     editing = target;
     if (!target) {
       document.body.dataset.editing = 'false';
@@ -2331,23 +2242,24 @@
     setEditing({ type: 'icon', com, seg });
   }
 
-  function updateEditCursor() {
-    if (!editing) return;
-    const bb = editing.type === 'pos'
-      ? getPositionScreenBBox(currentLcd, editing.pos)
-      : getAddrScreenBBox(editing.com, editing.seg);
+  const OVERLAY_PAD = 6;
+  function positionOverlay(el, bb) {
     if (!bb) return;
-    const stageRect = stage.getBoundingClientRect();
-    const PAD = 6;
-    editCursorEl.style.left   = `${bb.left - stageRect.left - PAD}px`;
-    editCursorEl.style.top    = `${bb.top  - stageRect.top  - PAD}px`;
-    editCursorEl.style.width  = `${bb.width  + PAD * 2}px`;
-    editCursorEl.style.height = `${bb.height + PAD * 2}px`;
+    const s = stage.getBoundingClientRect();
+    el.style.left   = `${bb.left - s.left - OVERLAY_PAD}px`;
+    el.style.top    = `${bb.top  - s.top  - OVERLAY_PAD}px`;
+    el.style.width  = `${bb.width  + OVERLAY_PAD * 2}px`;
+    el.style.height = `${bb.height + OVERLAY_PAD * 2}px`;
   }
 
-  // Combined screen bbox of all real paths (not hit rects) for a single address.
-  function getAddrScreenBBox(com, seg) {
-    const els = perLcdIndex[currentLcd].get(`${com},${seg}`) || [];
+  function updateEditCursor() {
+    if (!editing) return;
+    positionOverlay(editCursorEl, editing.type === 'pos'
+      ? getPositionScreenBBox(currentLcd, editing.pos)
+      : getAddrScreenBBox(editing.com, editing.seg));
+  }
+
+  function unionClientRects(els) {
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, ok = false;
     for (const el of els) {
       if (el.hasAttribute('data-hit')) continue;
@@ -2362,31 +2274,33 @@
     return ok ? { left: minX, top: minY, width: maxX - minX, height: maxY - minY } : null;
   }
 
+  function getAddrScreenBBox(com, seg) {
+    return unionClientRects(perLcdIndex[currentLcd].get(`${com},${seg}`) || []);
+  }
+
+  // Cached per-LCD per-position. The cmd-hover preview reads this on every
+  // mousemove, so avoiding ~100 getBoundingClientRect calls per frame matters.
+  // Invalidated on window resize; segment geometry itself doesn't change at runtime.
+  const posBBoxCache = { custom: [], classic: [] };
+  function invalidatePosBBoxCache() {
+    posBBoxCache.custom.length = 0;
+    posBBoxCache.classic.length = 0;
+  }
   function getPositionScreenBBox(lcd, pos) {
-    const positions = lcd === 'custom' ? CUSTOM_POSITIONS : CLASSIC_POSITIONS;
-    const mapping = positions[pos];
-    if (!mapping) return null;
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity, ok = false;
+    const cache = posBBoxCache[lcd];
+    if (pos in cache) return cache[pos];
+    const mapping = (lcd === 'custom' ? CUSTOM_POSITIONS : CLASSIC_POSITIONS)[pos];
+    if (!mapping) return (cache[pos] = null);
+    const els = [];
     const seen = new Set();
     for (const slot of mapping) {
       if (!slot) continue;
       const key = `${slot[0]},${slot[1]}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const els = perLcdIndex[lcd].get(key) || [];
-      for (const el of els) {
-        if (el.hasAttribute('data-hit')) continue;
-        const r = el.getBoundingClientRect();
-        if (r.width === 0 && r.height === 0) continue;
-        if (r.left < minX) minX = r.left;
-        if (r.top  < minY) minY = r.top;
-        if (r.right  > maxX) maxX = r.right;
-        if (r.bottom > maxY) maxY = r.bottom;
-        ok = true;
-      }
+      for (const e of perLcdIndex[lcd].get(key) || []) els.push(e);
     }
-    if (!ok) return null;
-    return { left: minX, top: minY, width: maxX - minX, height: maxY - minY };
+    return (cache[pos] = unionClientRects(els));
   }
 
   // Find which digit position's bounding area contains the given client point.
@@ -2439,8 +2353,6 @@
     else setEditIcon(e.com, e.seg);
   }
 
-  // Linear navigation through the reading-order list (used by Tab / Shift+Tab
-  // and by Backspace as a "go back" step).
   function moveNavLinear(delta) {
     if (!editing) return;
     const order = navOrder[currentLcd];
@@ -2451,9 +2363,8 @@
     selectNavEntry(order[nextIdx]);
   }
 
-  // 2D spatial navigation — arrow keys pick the closest item in that direction,
-  // weighting perpendicular distance heavier so "arrow right" prefers things
-  // roughly at the same height over far-off diagonals.
+  // Arrow-key nav: pick the closest entry in the given direction, weighting
+  // perpendicular distance heavier so "right" prefers same-height over diagonals.
   function moveNavSpatial(dir) {
     if (!editing) return;
     const cur = currentNavEntry();
@@ -2494,7 +2405,6 @@
     saveState();
   }
 
-  // Keyboard: only active while something is selected and focus isn't in an input
   document.addEventListener('keydown', (e) => {
     if (!editing) return;
     const tag = e.target.tagName;
@@ -2504,8 +2414,6 @@
       setEditing(null); e.preventDefault(); return;
     }
 
-    // Arrow keys: 2D spatial navigation (nearest in the direction).
-    // Tab / Shift+Tab: linear reading-order fallback.
     if (e.key === 'ArrowLeft')  { moveNavSpatial('left');  e.preventDefault(); return; }
     if (e.key === 'ArrowRight') { moveNavSpatial('right'); e.preventDefault(); return; }
     if (e.key === 'ArrowUp')    { moveNavSpatial('up');    e.preventDefault(); return; }
@@ -2514,12 +2422,10 @@
     if (e.key === 'Tab')               { moveNavLinear(+1); e.preventDefault(); return; }
 
     if (editing.type === 'icon') {
-      // Space (or Enter) toggles the icon on/off
       if (e.key === ' ' || e.key === 'Enter') {
         toggleAddr(editing.com, editing.seg);
         e.preventDefault(); return;
       }
-      // Backspace/Delete forces it off
       if (e.key === 'Backspace' || e.key === 'Delete') {
         const key = `${editing.com},${editing.seg}`;
         if (perLcdLit[currentLcd].has(key)) toggleAddr(editing.com, editing.seg);
@@ -2528,7 +2434,6 @@
       return;
     }
 
-    // editing.type === 'pos' below
     const pos = editing.pos;
     if (e.key === 'Backspace') {
       clearPosition(pos);
@@ -2538,23 +2443,22 @@
     if (e.key === 'Delete') {
       clearPosition(pos); e.preventDefault(); return;
     }
-    // Space toggles the whole position on/off (instead of painting the ' ' char)
+    // Space toggles the whole digit, instead of painting ' ' (which would clear).
     if (e.key === ' ') {
       togglePositionAll(pos);
       e.preventDefault(); return;
     }
-    // Printable ASCII single character → paint the current position, stay put.
-    // Use ← / → (or Tab) to move; Cmd/Ctrl+click to jump anywhere.
     if (e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
       paintCharacter(e.key);
       e.preventDefault();
     }
   });
 
-  // Recompute cursor on window resize (the SVG rescales with the viewport)
-  window.addEventListener('resize', () => { if (editing) updateEditCursor(); });
+  window.addEventListener('resize', () => {
+    invalidatePosBBoxCache();
+    if (editing) updateEditCursor();
+  });
 
-  // "Show invisibles" toggle
   const peekToggle = document.getElementById('peek-toggle');
   peekToggle.addEventListener('change', () => {
     document.body.dataset.peek = peekToggle.checked ? 'true' : 'false';
@@ -2584,7 +2488,6 @@
     });
   });
 
-  // Export formatting
   let exportFmt = 'c';
   function litSorted() {
     return [...perLcdLit[currentLcd]]
