@@ -6,7 +6,7 @@ Supports both chassis skins (F-91W / A158WEA-9) and both LCD types (Classic / Cu
 
 ## Run
 
-Open `index.html` in a browser. No build, no server, no dependencies.
+Open `index.html` in a browser.
 
 ## Controls
 
