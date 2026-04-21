@@ -4,6 +4,7 @@
 
 <img width="1219" height="891" alt="Bildschirmfoto 2026-04-21 um 15 35 02" src="https://github.com/user-attachments/assets/f4f77bf1-ab9b-44f8-b64d-385e20ce80d3" />
 
+---
 
 A small browser tool for designing Sensor Watch faces segment-by-segment. Toggle individual LCD segments, type characters into digit positions, and export as `watch_set_pixel(com, seg)` C calls ready to paste into a Movement face.
 
